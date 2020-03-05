@@ -1,0 +1,5 @@
+wget https://race.coderrect.com/t/coderrect-linux-0.1.0.bz2
+tar xvf coderrect-linux-0.1.0.bz2
+export CODERRECT_HOME=$PWD/coderrect-linux-0.1.0
+export PATH=$CODERRECT_HOME/bin:$PATH
+coderrect .

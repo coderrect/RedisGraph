@@ -1,5 +1,10 @@
 .PHONY: all clean package docker docker_push builddocs localdocs deploydocs test test_valgrind
 
+hang: all
+	cd hang; \
+	make;
+.PHONY: hang
+
 all:
 	@$(MAKE) -C ./src all
 

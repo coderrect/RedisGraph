@@ -1,5 +1,10 @@
 .PHONY: all clean package docker docker_push builddocs localdocs deploydocs test test_valgrind
 
+graph_race: hang
+	cd graph_race; \
+	make;
+.PHONY: graph_race
+
 hang: all
 	cd hang; \
 	make;

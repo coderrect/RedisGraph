@@ -1,5 +1,5 @@
-wget https://public-installer-pkg.s3.us-east-2.amazonaws.com/coderrect-linux-0.2.0.tar.gz
-tar xvf coderrect-linux-0.2.0.tar.gz
+wget https://race.coderrect.com/t/coderrect-linux-0.2.0.bz2
+tar xvf coderrect-linux-0.2.0.bz2
 export CODERRECT_HOME=$PWD/coderrect-linux-0.2.0
 export PATH=$CODERRECT_HOME/bin:$PATH
 coderrect -e graph_race .

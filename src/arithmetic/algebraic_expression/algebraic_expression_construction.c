@@ -196,8 +196,10 @@ static AlgebraicExpression *_AlgebraicExpression_OperandFromEdge
 
 	QGNode *src_node = e->src;
 	QGNode *dest_node = e->dest;
-	const char *src = src_node->alias;
-	const char *dest = dest_node->alias;
+
+	// Use original `src` and `dest` for algebraic operands.
+	const char *src = (transpose) ? dest_node->alias : src_node->alias;
+	const char *dest = (transpose) ? src_node->alias : dest_node->alias;
 	const char *edge = _should_populate_edge(e) ? e->alias : NULL;
 	bool var_len_traversal = QGEdge_VariableLength(e);
 
@@ -514,7 +516,6 @@ AlgebraicExpression **AlgebraicExpression_FromQueryGraph
 		uint sub_count = array_len(sub_exps);
 		for(uint i = 0; i < sub_count; i++) {
 			AlgebraicExpression *exp = sub_exps[i];
-			AlgebraicExpression_Optimize(&exp);
 			// Add constructed expression to return value.
 			exps = array_append(exps, exp);
 		}

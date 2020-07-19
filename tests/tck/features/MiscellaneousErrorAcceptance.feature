@@ -97,7 +97,6 @@ Feature: MiscellaneousErrorAcceptance
       """
     Then a SyntaxError should be raised at compile time: NoExpressionAlias
 
-@skip
   Scenario: Failing when using undefined variable in pattern
     When executing query:
       """
@@ -187,7 +186,6 @@ Feature: MiscellaneousErrorAcceptance
       """
     Then a SyntaxError should be raised at compile time: InvalidClauseComposition
 
-@skip
   Scenario: Failing when creating without direction
     When executing query:
       """
@@ -195,7 +193,6 @@ Feature: MiscellaneousErrorAcceptance
       """
     Then a SyntaxError should be raised at compile time: RequiresDirectedRelationship
 
-@skip
   Scenario: Failing when creating with two directions
     When executing query:
       """

@@ -74,11 +74,9 @@ void QueryCtx_SetGlobalExecutionCtx(CommandCtx *cmd_ctx);
 /* Set the provided AST for access through the QueryCtx. */
 void QueryCtx_SetAST(AST *ast);
 /* Set the error message for this query. */
-void QueryCtx_SetError(char *error);
+void QueryCtx_SetError(char *err_fmt, ...);
 /* Set the provided GraphCtx for access through the QueryCtx. */
 void QueryCtx_SetGraphCtx(GraphContext *gc);
-/* Set the Redis module context. */
-void QueryCtx_SetRedisModuleCtx(RedisModuleCtx *redisctx);
 /* Set the resultset. */
 void QueryCtx_SetResultSet(ResultSet *result_set);
 /* Set the last writer which needs to commit */

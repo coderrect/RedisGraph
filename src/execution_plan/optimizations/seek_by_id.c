@@ -19,7 +19,7 @@ static bool _idFilter(FT_FilterNode *f, AST_Operator *rel, EntityID *id, bool *r
 	if(f->pred.op == OP_NEQUAL) return false;
 
 	AR_OpNode *op;
-	AR_OperandNode *operand;
+	AR_ExpNode *expr;
 	AR_ExpNode *lhs = f->pred.lhs;
 	AR_ExpNode *rhs = f->pred.rhs;
 	*rel = f->pred.op;
@@ -29,20 +29,22 @@ static bool _idFilter(FT_FilterNode *f, AST_Operator *rel, EntityID *id, bool *r
 	 * const compare ID(N) */
 	if(lhs->type == AR_EXP_OPERAND && rhs->type == AR_EXP_OP) {
 		op = &rhs->op;
-		operand = &lhs->operand;
+		expr = lhs;
 		*reverse = true;
 	} else if(lhs->type == AR_EXP_OP && rhs->type == AR_EXP_OPERAND) {
 		op = &lhs->op;
-		operand = &rhs->operand;
+		expr = rhs;
 		*reverse = false;
 	} else {
 		return false;
 	}
 
-	// Make sure ID is compared to a constant.
-	if(operand->type != AR_EXP_CONSTANT) return false;
-	if(SI_TYPE(operand->constant) != T_INT64) return false;
-	*id = SI_GET_NUMERIC(operand->constant);
+	// Make sure ID is compared to a constant int64.
+	SIValue val;
+	bool reduced = AR_EXP_ReduceToScalar(expr, true, &val);
+	if(!reduced) return false;
+	if(SI_TYPE(val) != T_INT64) return false;
+	*id = SI_GET_NUMERIC(val);
 
 	// Make sure applied function is ID.
 	if(strcasecmp(op->func_name, "id")) return false;
@@ -86,17 +88,7 @@ static void _UseIdOptimization(ExecutionPlan *plan, OpBase *scan_op) {
 			NodeByLabelScan *label_scan = (NodeByLabelScan *) scan_op;
 			NodeByLabelScanOp_SetIDRange(label_scan, id_range);
 		} else {
-			const QGNode *node = NULL;
-			switch(scan_op->type) {
-			case OPType_ALL_NODE_SCAN:
-				node = ((AllNodeScan *)scan_op)->n;
-				break;
-			case OPType_INDEX_SCAN:
-				node = ((IndexScan *)scan_op)->n;
-				break;
-			default:
-				assert(false);
-			}
+			const QGNode *node = ((AllNodeScan *)scan_op)->n;
 			OpBase *opNodeByIdSeek = NewNodeByIdSeekOp(scan_op->plan, node, id_range);
 
 			// Managed to reduce!
@@ -109,8 +101,9 @@ static void _UseIdOptimization(ExecutionPlan *plan, OpBase *scan_op) {
 
 void seekByID(ExecutionPlan *plan) {
 	assert(plan);
-	OpBase **scan_ops = ExecutionPlan_LocateOps(plan->root,
-												(OPType_ALL_NODE_SCAN | OPType_NODE_BY_LABEL_SCAN));
+
+	const OPType types[] = {OPType_ALL_NODE_SCAN, OPType_NODE_BY_LABEL_SCAN};
+	OpBase **scan_ops = ExecutionPlan_CollectOpsMatchingType(plan->root, types, 2);
 
 	for(int i = 0; i < array_len(scan_ops); i++) {
 		_UseIdOptimization(plan, scan_ops[i]);

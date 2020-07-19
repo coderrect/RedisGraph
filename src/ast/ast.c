@@ -47,7 +47,7 @@ static void _consume_function_call_expression(const cypher_astnode_t *expression
 	}
 }
 
-static inline int _get_limit(const cypher_astnode_t *project_clause) {
+static inline AR_ExpNode *_get_limit(const cypher_astnode_t *project_clause) {
 	const cypher_astnode_t *limit_node = NULL;
 	// Retrieve the AST LIMIT node if one is specified.
 	if(cypher_astnode_type(project_clause) == CYPHER_AST_WITH) {
@@ -56,9 +56,23 @@ static inline int _get_limit(const cypher_astnode_t *project_clause) {
 		limit_node = cypher_ast_return_get_limit(project_clause);
 	}
 
-	if(limit_node == NULL) return UNLIMITED;
+	if(limit_node == NULL) return NULL;
 	// Parse the LIMIT value.
-	return AST_ParseIntegerNode(limit_node);
+	return AR_EXP_FromExpression(limit_node);
+}
+
+static inline AR_ExpNode *_get_skip(const cypher_astnode_t *project_clause) {
+	const cypher_astnode_t *skip_clause = NULL;
+	// Retrieve the AST LIMIT node if one is specified.
+	if(cypher_astnode_type(project_clause) == CYPHER_AST_WITH) {
+		skip_clause = cypher_ast_with_get_skip(project_clause);
+	} else if(cypher_astnode_type(project_clause) == CYPHER_AST_RETURN) {
+		skip_clause = cypher_ast_return_get_skip(project_clause);
+	}
+
+	if(skip_clause == NULL) return NULL;
+	// Parse the LIMIT value.
+	return AR_EXP_FromExpression(skip_clause);
 }
 
 // If the project clause has a LIMIT modifier, set its value in the constructed AST.
@@ -68,16 +82,20 @@ static void _AST_LimitResults(AST *ast, const cypher_astnode_t *root_clause,
 	if(root_type == CYPHER_AST_RETURN || root_type == CYPHER_AST_WITH) {
 		// Use the root clause of this AST if it is a projection.
 		ast->limit = _get_limit(root_clause);
+		ast->skip = _get_skip(root_clause);
 	} else if(project_clause) {
 		// Use the subsequent projection clause (if one is provided) otherwise.
 		ast->limit = _get_limit(project_clause);
+		ast->skip = _get_skip(project_clause);
 	}
 }
 
 /* This method extracts the query given parameters values, convert them into
  * constant arithmetic expressions and store them in a map of <name, value>
  * in the query context. */
-static void _extract_params(const cypher_astnode_t *statement) {
+static void _AST_Extract_Params(const cypher_parse_result_t *parse_result) {
+	// Retrieve the AST root node from a parsed query.
+	const cypher_astnode_t *statement = cypher_parse_result_get_root(parse_result, 0);
 	uint noptions = cypher_ast_statement_noptions(statement);
 	if(noptions == 0) return;
 	rax *params = QueryCtx_GetParams();
@@ -94,8 +112,9 @@ static void _extract_params(const cypher_astnode_t *statement) {
 	}
 }
 
-static bool _AST_ReadOnly(const cypher_astnode_t *root) {
-	if(!root) return false;
+bool AST_ReadOnly(const cypher_astnode_t *root) {
+	// Check for empty query
+	if(root == NULL) return true;
 	cypher_astnode_type_t type = cypher_astnode_type(root);
 	if(type == CYPHER_AST_CREATE                      ||
 	   type == CYPHER_AST_MERGE                  ||
@@ -113,23 +132,9 @@ static bool _AST_ReadOnly(const cypher_astnode_t *root) {
 	uint num_children = cypher_astnode_nchildren(root);
 	for(uint i = 0; i < num_children; i ++) {
 		const cypher_astnode_t *child = cypher_astnode_get_child(root, i);
-		if(!_AST_ReadOnly(child)) return false;
+		if(!AST_ReadOnly(child)) return false;
 	}
 	return true;
-}
-
-bool AST_ReadOnly(const cypher_parse_result_t *result) {
-	// A lot of these steps will be unnecessary once we move
-	// parsing into the subthread (and can thus perform this check
-	// after validations).
-
-	// Check for failures in libcypher-parser
-	if(AST_ContainsErrors(result)) return true;
-
-	const cypher_astnode_t *root = cypher_parse_result_get_root(result, 0);
-	// Check for empty query
-	if(root == NULL) return true;
-	return _AST_ReadOnly(root);
 }
 
 inline bool AST_ContainsClause(const AST *ast, cypher_astnode_type_t clause) {
@@ -212,8 +217,6 @@ const cypher_astnode_t **AST_GetClauses(const AST *ast, cypher_astnode_type_t ty
 	return found;
 }
 
-
-
 static void _AST_GetTypedNodes(const cypher_astnode_t  ***nodes, const cypher_astnode_t *root,
 							   cypher_astnode_type_t type) {
 	if(cypher_astnode_type(root) == type) *nodes = array_append(*nodes, root);
@@ -245,19 +248,21 @@ void AST_CollectAliases(const char ***aliases, const cypher_astnode_t *entity) {
 
 AST *AST_Build(cypher_parse_result_t *parse_result) {
 	AST *ast = rm_malloc(sizeof(AST));
+	ast->skip = NULL;
+	ast->limit = NULL;
+	ast->ref_count = 1;
+	ast->free_root = false;
+	ast->params_parse_result = NULL;
 	ast->referenced_entities = NULL;
+	ast->parse_result = parse_result;
 	ast->canonical_entity_names = raxNew();
 	ast->anot_ctx_collection = AST_AnnotationCtxCollection_New();
-	ast->free_root = false;
-	ast->limit = UNLIMITED;
 
 	// Retrieve the AST root node from a parsed query.
 	const cypher_astnode_t *statement = cypher_parse_result_get_root(parse_result, 0);
 	// We are parsing with the CYPHER_PARSE_ONLY_STATEMENTS flag,
 	// and double-checking this in AST validations
 	assert(cypher_astnode_type(statement) == CYPHER_AST_STATEMENT);
-	// Extract the given query parameters value, and store them in query context.
-	_extract_params(statement);
 	ast->root = cypher_ast_statement_get_body(statement);
 
 	// Empty queries should be captured by AST validations
@@ -277,7 +282,11 @@ AST *AST_NewSegment(AST *master_ast, uint start_offset, uint end_offset) {
 	ast->anot_ctx_collection = master_ast->anot_ctx_collection;
 	ast->canonical_entity_names = master_ast->canonical_entity_names;
 	ast->free_root = true;
-	ast->limit = UNLIMITED;
+	ast->limit = NULL;
+	ast->skip = NULL;
+	ast->ref_count = 1;
+	ast->parse_result = NULL;
+	ast->params_parse_result = NULL;
 	uint n = end_offset - start_offset;
 
 	const cypher_astnode_t *clauses[n];
@@ -312,6 +321,17 @@ AST *AST_NewSegment(AST *master_ast, uint start_offset, uint end_offset) {
 	AST_BuildReferenceMap(ast, project_clause);
 
 	return ast;
+}
+
+void AST_SetParamsParseResult(AST *ast, cypher_parse_result_t *params_parse_result) {
+	// When setting this value in AST, the ast should no hold invalid pointers or leftovers from previous executions.
+	assert(ast->params_parse_result == NULL);
+	ast->params_parse_result = params_parse_result;
+}
+
+AST *AST_ShallowCopy(AST *orig) {
+	orig->ref_count++;
+	return orig;
 }
 
 inline bool AST_AliasIsReferenced(AST *ast, const char *alias) {
@@ -430,10 +450,21 @@ const char **AST_BuildCallColumnNames(const cypher_astnode_t *call_clause) {
 	return proc_output_columns;
 }
 
+const char *_AST_ExtractQueryString(const cypher_parse_result_t *partial_result) {
+	// Retrieve the AST root node from a parsed query.
+	const cypher_astnode_t *statement = cypher_parse_result_get_root(partial_result, 0);
+	// We are parsing with the CYPHER_PARSE_ONLY_PARAMETERS flag.
+	// Given that, only the parameters were processed. extract the actual query and return to caller.
+	assert(cypher_astnode_type(statement) == CYPHER_AST_STATEMENT);
+	const cypher_astnode_t *body = cypher_ast_statement_get_body(statement);
+	assert(cypher_astnode_type(body) == CYPHER_AST_STRING);
+	return cypher_ast_string_get_value(body);
+}
+
 // Determine the maximum number of records
 // which will be considered when evaluating an algebraic expression.
 int TraverseRecordCap(const AST *ast) {
-	return MIN(ast->limit, 16);  // Use 16 as the default value.
+	return MIN(AST_GetLimit(ast), 16);  // Use 16 as the default value.
 }
 
 inline AST_AnnotationCtxCollection *AST_GetAnnotationCtxCollection(AST *ast) {
@@ -442,6 +473,15 @@ inline AST_AnnotationCtxCollection *AST_GetAnnotationCtxCollection(AST *ast) {
 
 void AST_Free(AST *ast) {
 	if(ast == NULL) return;
+	ast->ref_count--;
+	// Free and nullify parameters parse result if needed, after execution, as they are only save for the execution lifetime.
+	if(ast->params_parse_result) {
+		parse_result_free(ast->params_parse_result);
+		ast->params_parse_result = NULL;
+	}
+	// Check if the ast is still referenced.
+	if(ast->ref_count > 0) return;
+	// No valid references - the struct can be disposed completely.
 	if(ast->referenced_entities) raxFree(ast->referenced_entities);
 	if(ast->free_root) {
 		// This is a generated AST, free its root node.
@@ -450,12 +490,63 @@ void AST_Free(AST *ast) {
 		// This is the master AST, free the annotation contexts that have been constructed.
 		AST_AnnotationCtxCollection_Free(ast->anot_ctx_collection);
 		raxFreeWithCallback(ast->canonical_entity_names, rm_free);
+		parse_result_free(ast->parse_result);
 	}
+	if(ast->limit) AR_EXP_Free(ast->limit);
+	if(ast->skip) AR_EXP_Free(ast->skip);
+
 	rm_free(ast);
+
 }
 
-cypher_parse_result_t *parse(const char *query) {
-	return cypher_parse(query, NULL, NULL, CYPHER_PARSE_ONLY_STATEMENTS);
+inline AR_ExpNode *AST_GetLimitExpr(const AST *ast) {
+	return ast->limit;
+}
+
+uint64_t AST_GetLimit(const AST *ast) {
+	if(!ast->limit) return UNLIMITED;
+	SIValue limit_value =  AR_EXP_Evaluate(ast->limit, NULL);
+	if(SI_TYPE(limit_value) != T_INT64) {
+		QueryCtx_SetError("LIMIT specified value of invalid type, must be a positive integer"); // Set the query-level error.
+		QueryCtx_RaiseRuntimeException();
+	}
+	return limit_value.longval;
+}
+
+inline AR_ExpNode *AST_GetSkipExpr(const AST *ast) {
+	return ast->skip;
+}
+
+uint64_t AST_GetSkip(const AST *ast) {
+	if(!ast->skip) return 0;
+	SIValue skip_value =  AR_EXP_Evaluate(ast->skip, NULL);
+	if(SI_TYPE(skip_value) != T_INT64) {
+		QueryCtx_SetError("SKIP specified value of invalid type, must be a positive integer"); // Set the query-level error.
+		QueryCtx_RaiseRuntimeException();
+	}
+	return skip_value.longval;
+}
+
+cypher_parse_result_t *parse_query(const char *query) {
+	cypher_parse_result_t *result = cypher_parse(query, NULL, NULL, CYPHER_PARSE_ONLY_STATEMENTS);
+	if(!result) return NULL;
+	if(AST_Validate_Query(result) != AST_VALID) {
+		parse_result_free(result);
+		return NULL;
+	}
+	return result;
+}
+
+cypher_parse_result_t *parse_params(const char *query, const char **query_body) {
+	cypher_parse_result_t *result = cypher_parse(query, NULL, NULL, CYPHER_PARSE_ONLY_PARAMETERS);
+	if(!result) return NULL;
+	if(AST_Validate_QueryParams(result) != AST_VALID) {
+		parse_result_free(result);
+		return NULL;
+	}
+	_AST_Extract_Params(result);
+	if(query_body) *query_body = _AST_ExtractQueryString(result);
+	return result;
 }
 
 void parse_result_free(cypher_parse_result_t *parse_result) {

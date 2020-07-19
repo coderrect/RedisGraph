@@ -27,7 +27,9 @@ void _FT_Append(FT_FilterNode **root_ptr, FT_FilterNode *child) {
 			FilterTree_AppendLeftChild(root, child);
 			return;
 		}
-		if(root->cond.right == NULL) {
+
+		// NOT condition nodes should always have a NULL right child; do not replace it.
+		if(root->cond.right == NULL && root->cond.op != OP_NOT) {
 			FilterTree_AppendRightChild(root, child);
 			return;
 		}
@@ -319,6 +321,8 @@ FT_FilterNode *AST_BuildFilterTree(AST *ast) {
 	if(match_clauses) {
 		uint match_count = array_len(match_clauses);
 		for(uint i = 0; i < match_count; i ++) {
+			// Optional match clauses are handled separately.
+			if(cypher_ast_match_is_optional(match_clauses[i])) continue;
 			const cypher_astnode_t *pattern = cypher_ast_match_get_pattern(match_clauses[i]);
 			_AST_ConvertGraphPatternToFilter(ast, &filter_tree, pattern);
 			const cypher_astnode_t *predicate = cypher_ast_match_get_predicate(match_clauses[i]);
@@ -349,10 +353,7 @@ FT_FilterNode *AST_BuildFilterTree(AST *ast) {
 
 	if(!FilterTree_Valid(filter_tree)) {
 		// Invalid filter tree structure, set a compile-time error.
-		char *error;
-		asprintf(&error, "Invalid filter statement.");
-		QueryCtx_SetError(error);
-
+		QueryCtx_SetError("Invalid filter statement.");
 		FilterTree_Free(filter_tree);
 		return NULL;
 	}
@@ -362,3 +363,4 @@ FT_FilterNode *AST_BuildFilterTree(AST *ast) {
 
 	return filter_tree;
 }
+

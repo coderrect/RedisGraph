@@ -295,7 +295,7 @@ static void _ExecutionPlan_ProcessQueryGraph(ExecutionPlan *plan, QueryGraph *qg
 				if(edge && QGEdge_VariableLength(edge)) {
 					root = NewCondVarLenTraverseOp(plan, gc->g, exp);
 				} else {
-					root = NewCondTraverseOp(plan, gc->g, exp, TraverseRecordCap(ast));
+					root = NewCondTraverseOp(plan, gc->g, exp);
 				}
 				// Insert the new traversal op at the root of the chain.
 				ExecutionPlan_AddOp(root, tail);
@@ -318,7 +318,7 @@ static void _ExecutionPlan_ProcessQueryGraph(ExecutionPlan *plan, QueryGraph *qg
 }
 
 static void _ExecutionPlan_PlaceApplyOps(ExecutionPlan *plan) {
-	OpBase **filter_ops = ExecutionPlan_LocateOps(plan->root, OPType_FILTER);
+	OpBase **filter_ops = ExecutionPlan_CollectOps(plan->root, OPType_FILTER);
 	uint filter_ops_count = array_len(filter_ops);
 	for(uint i = 0; i < filter_ops_count; i++) {
 		OpFilter *op = (OpFilter *)filter_ops[i];
@@ -361,8 +361,17 @@ void ExecutionPlan_RePositionFilterOp(ExecutionPlan *plan, OpBase *lower_bound,
 		// This is a new filter.
 		ExecutionPlan_PushBelow(op, (OpBase *)filter);
 	}
-	// Re set the plan root if needed.
-	if(op == plan->root) plan->root = filter;
+
+	/* Filter may have migrated a segment, update the filter segment
+	 * and check if the segment root needs to be updated.
+	 * The filter should be associated with the op's segment. */
+	filter->plan = op->plan;
+	// Re-set the segment root if needed.
+	if(op == op->plan->root) {
+		ExecutionPlan *segment = (ExecutionPlan *)op->plan;
+		segment->root = filter;
+	}
+
 	raxFree(references);
 }
 
@@ -409,8 +418,7 @@ static void _combine_projection_arrays(AR_ExpNode ***exps_ptr, AR_ExpNode **orde
 // Build an aggregate or project operation and any required modifying operations.
 // This logic applies for both WITH and RETURN projections.
 static inline void _buildProjectionOps(ExecutionPlan *plan, AR_ExpNode **projections,
-									   AR_ExpNode **order_exps, uint skip,
-									   int *sort_directions, bool aggregate, bool distinct) {
+									   AR_ExpNode **order_exps, int *sort_directions, bool aggregate, bool distinct) {
 
 	// Merge order expressions into the projections array.
 	if(order_exps) _combine_projection_arrays(&projections, order_exps);
@@ -434,22 +442,20 @@ static inline void _buildProjectionOps(ExecutionPlan *plan, AR_ExpNode **project
 	}
 
 	AST *ast = QueryCtx_GetAST();
-	uint limit = ast->limit;
 
 	if(sort_directions) {
 		// The sort operation will obey a specified limit, but must account for skipped records
-		uint sort_limit = (limit != UNLIMITED) ? limit + skip : 0;
-		OpBase *op = NewSortOp(plan, order_exps, sort_directions, sort_limit);
+		OpBase *op = NewSortOp(plan, order_exps, sort_directions);
 		_ExecutionPlan_UpdateRoot(plan, op);
 	}
 
-	if(skip) {
-		OpBase *op = NewSkipOp(plan, skip);
+	if(AST_GetSkipExpr(ast)) {
+		OpBase *op = NewSkipOp(plan);
 		_ExecutionPlan_UpdateRoot(plan, op);
 	}
 
-	if(limit != UNLIMITED) {
-		OpBase *op = NewLimitOp(plan, limit);
+	if(AST_GetLimitExpr(ast)) {
+		OpBase *op = NewLimitOp(plan);
 		_ExecutionPlan_UpdateRoot(plan, op);
 	}
 }
@@ -464,9 +470,6 @@ static void _buildReturnOps(ExecutionPlan *plan, const cypher_astnode_t *clause)
 
 	const cypher_astnode_t *skip_clause = cypher_ast_return_get_skip(clause);
 
-	uint skip = 0;
-	if(skip_clause) skip = AST_ParseIntegerNode(skip_clause);
-
 	int *sort_directions = NULL;
 	AR_ExpNode **order_exps = NULL;
 	const cypher_astnode_t *order_clause = cypher_ast_return_get_order_by(clause);
@@ -474,7 +477,7 @@ static void _buildReturnOps(ExecutionPlan *plan, const cypher_astnode_t *clause)
 		AST_PrepareSortOp(order_clause, &sort_directions);
 		order_exps = _BuildOrderExpressions(projections, order_clause);
 	}
-	_buildProjectionOps(plan, projections, order_exps, skip, sort_directions, aggregate, distinct);
+	_buildProjectionOps(plan, projections, order_exps, sort_directions, aggregate, distinct);
 }
 
 static void _buildWithOps(ExecutionPlan *plan, const cypher_astnode_t *clause) {
@@ -484,10 +487,6 @@ static void _buildWithOps(ExecutionPlan *plan, const cypher_astnode_t *clause) {
 
 	const cypher_astnode_t *skip_clause = cypher_ast_with_get_skip(clause);
 
-	uint skip = 0;
-	uint limit = RESULTSET_UNLIMITED;
-	if(skip_clause) skip = AST_ParseIntegerNode(skip_clause);
-
 	int *sort_directions = NULL;
 	AR_ExpNode **order_exps = NULL;
 	const cypher_astnode_t *order_clause = cypher_ast_with_get_order_by(clause);
@@ -495,7 +494,7 @@ static void _buildWithOps(ExecutionPlan *plan, const cypher_astnode_t *clause) {
 		AST_PrepareSortOp(order_clause, &sort_directions);
 		order_exps = _BuildOrderExpressions(projections, order_clause);
 	}
-	_buildProjectionOps(plan, projections, order_exps, skip, sort_directions, aggregate, distinct);
+	_buildProjectionOps(plan, projections, order_exps, sort_directions, aggregate, distinct);
 }
 
 // Convert a CALL clause into a procedure call operation.
@@ -580,7 +579,7 @@ static void _buildMergeOp(GraphContext *gc, AST *ast, ExecutionPlan *plan,
 	}
 
 	// Convert all the AST data required to populate our operations tree.
-	AST_MergeContext merge_ctx = AST_PrepareMergeOp(clause, plan->query_graph, bound_vars);
+	AST_MergeContext merge_ctx = AST_PrepareMergeOp(clause, gc, plan->query_graph, bound_vars);
 
 	// Create a Merge operation. It will store no information at this time except for any graph updates
 	// it should make due to ON MATCH and ON CREATE SET directives in the query.
@@ -601,9 +600,43 @@ static void _buildMergeOp(GraphContext *gc, AST *ast, ExecutionPlan *plan,
 	array_free(arguments);
 }
 
-static inline void _buildUpdateOp(ExecutionPlan *plan, const cypher_astnode_t *clause) {
-	EntityUpdateEvalCtx *update_exps = AST_PrepareUpdateOp(clause);
+static void _buildOptionalMatchOps(ExecutionPlan *plan, const cypher_astnode_t *clause) {
+	OpBase *optional = NewOptionalOp(plan);
+	const char **arguments = NULL;
+	// The root will be non-null unless the first clause is an OPTIONAL MATCH.
+	if(plan->root) {
+		// Collect the variables that are bound at this point.
+		rax *bound_vars = raxNew();
+		// Rather than cloning the record map, collect the bound variables along with their
+		// parser-generated constant strings.
+		ExecutionPlan_BoundVariables(plan->root, bound_vars);
+		// Collect the variable names from bound_vars to populate the Argument op we will build.
+		arguments = (const char **)raxValues(bound_vars);
+		raxFree(bound_vars);
+
+		// Create an Apply operator and make it the new root.
+		OpBase *apply_op = NewApplyOp(plan);
+		_ExecutionPlan_UpdateRoot(plan, apply_op);
+
+		// Create an Optional op and add it as an Apply child as a right-hand stream.
+		ExecutionPlan_AddOp(apply_op, optional);
+	}
+
+	// Build the new Match stream and add it to the Optional stream.
+	OpBase *match_stream = ExecutionPlan_BuildOpsFromPath(plan, arguments, clause);
+	ExecutionPlan_AddOp(optional, match_stream);
+
+	// If no root has been set (OPTIONAL was the first clause), set it to the Optional op.
+	if(!plan->root) _ExecutionPlan_UpdateRoot(plan, optional);
+
+	array_free(arguments);
+}
+
+static inline void _buildUpdateOp(GraphContext *gc, ExecutionPlan *plan,
+								  const cypher_astnode_t *clause) {
+	EntityUpdateEvalCtx *update_exps = AST_PrepareUpdateOp(gc, clause);
 	OpBase *op = NewUpdateOp(plan, update_exps);
+	array_free(update_exps);
 	_ExecutionPlan_UpdateRoot(plan, op);
 }
 
@@ -618,9 +651,12 @@ static void _ExecutionPlanSegment_ConvertClause(GraphContext *gc, AST *ast, Exec
 	cypher_astnode_type_t t = cypher_astnode_type(clause);
 	// Because 't' is set using the offsetof() call, it cannot be used in switch statements.
 	if(t == CYPHER_AST_MATCH) {
+		if(cypher_ast_match_is_optional(clause)) {
+			_buildOptionalMatchOps(plan, clause);
+			return;
+		}
 		// Only add at most one set of traversals per plan. TODO Revisit and improve this logic.
-		if(plan->root && (ExecutionPlan_LocateFirstOp(plan->root, OPType_NODE_BY_LABEL_SCAN) ||
-						  ExecutionPlan_LocateFirstOp(plan->root, OPType_ALL_NODE_SCAN))) {
+		if(plan->root && ExecutionPlan_LocateOpMatchingType(plan->root, SCAN_OPS, SCAN_OP_COUNT)) {
 			return;
 		}
 		_ExecutionPlan_ProcessQueryGraph(plan, plan->query_graph, ast, plan->filter_tree);
@@ -628,14 +664,14 @@ static void _ExecutionPlanSegment_ConvertClause(GraphContext *gc, AST *ast, Exec
 		_buildCallOp(ast, plan, clause);
 	} else if(t == CYPHER_AST_CREATE) {
 		// Only add at most one Create op per plan. TODO Revisit and improve this logic.
-		if(ExecutionPlan_LocateFirstOp(plan->root, OPType_CREATE)) return;
+		if(ExecutionPlan_LocateOp(plan->root, OPType_CREATE)) return;
 		_buildCreateOp(gc, ast, plan);
 	} else if(t == CYPHER_AST_UNWIND) {
 		_buildUnwindOp(plan, clause);
 	} else if(t == CYPHER_AST_MERGE) {
 		_buildMergeOp(gc, ast, plan, clause);
 	} else if(t == CYPHER_AST_SET) {
-		_buildUpdateOp(plan, clause);
+		_buildUpdateOp(gc, plan, clause);
 	} else if(t == CYPHER_AST_DELETE) {
 		_buildDeleteOp(plan, clause);
 	} else if(t == CYPHER_AST_RETURN) {
@@ -669,7 +705,7 @@ void ExecutionPlan_PopulateExecutionPlan(ExecutionPlan *plan) {
 	}
 }
 
-ExecutionPlan *ExecutionPlan_UnionPlans(AST *ast) {
+static ExecutionPlan *_ExecutionPlan_UnionPlans(AST *ast) {
 	uint end_offset = 0;
 	uint start_offset = 0;
 	uint clause_count = cypher_ast_query_nclauses(ast->root);
@@ -680,13 +716,13 @@ ExecutionPlan *ExecutionPlan_UnionPlans(AST *ast) {
 
 	/* Placeholder for each execution plan, these all will be joined
 	 * via a single UNION operation. */
-	ExecutionPlan **plans = rm_malloc(union_count * sizeof(ExecutionPlan *));
+	ExecutionPlan **plans = array_new(ExecutionPlan *, union_count);
 
 	for(int i = 0; i < union_count; i++) {
 		// Create an AST segment from which we will build an execution plan.
 		end_offset = union_indices[i];
 		AST *ast_segment = AST_NewSegment(ast, start_offset, end_offset);
-		plans[i] = NewExecutionPlan();
+		plans = array_append(plans, NewExecutionPlan());
 		AST_Free(ast_segment); // Free the AST segment.
 
 		// Next segment starts where this one ends.
@@ -710,7 +746,6 @@ ExecutionPlan *ExecutionPlan_UnionPlans(AST *ast) {
 	ExecutionPlan *plan = rm_calloc(1, sizeof(ExecutionPlan));
 	plan->root = NULL;
 	plan->segments = plans;
-	plan->segment_count = union_count;
 	plan->query_graph = NULL;
 	plan->record_map = raxNew();
 	plan->connected_components = NULL;
@@ -762,7 +797,7 @@ ExecutionPlan *NewExecutionPlan(void) {
 	uint clause_count = cypher_ast_query_nclauses(ast->root);
 
 	/* Handle UNION if there are any. */
-	if(AST_ContainsClause(ast, CYPHER_AST_UNION)) return ExecutionPlan_UnionPlans(ast);
+	if(AST_ContainsClause(ast, CYPHER_AST_UNION)) return _ExecutionPlan_UnionPlans(ast);
 
 	uint start_offset = 0;
 	uint end_offset = 0;
@@ -792,7 +827,7 @@ ExecutionPlan *NewExecutionPlan(void) {
 	segment_indices = array_append(segment_indices, clause_count);
 
 	uint segment_count = array_len(segment_indices);
-	ExecutionPlan **segments = rm_malloc(segment_count * sizeof(ExecutionPlan *));
+	ExecutionPlan **segments = array_new(ExecutionPlan *, segment_count);
 	AST *ast_segments[segment_count];
 	start_offset = 0;
 	for(int i = 0; i < segment_count; i++) {
@@ -803,8 +838,8 @@ ExecutionPlan *NewExecutionPlan(void) {
 		// Construct a new ExecutionPlanSegment.
 		ExecutionPlan *segment = ExecutionPlan_NewEmptyExecutionPlan();
 		ExecutionPlan_PopulateExecutionPlan(segment);
-
-		segments[i] = segment;
+		segment->ast_segment = ast_segment;
+		segments = array_append(segments, segment);
 		start_offset = end_offset;
 	}
 
@@ -820,38 +855,46 @@ ExecutionPlan *NewExecutionPlan(void) {
 		ExecutionPlan *current_segment = segments[i];
 
 		OpBase *prev_root = prev_segment->root;
-		connecting_op = ExecutionPlan_LocateFirstOp(current_segment->root,
-													OPType_PROJECT | OPType_AGGREGATE);
+		connecting_op = ExecutionPlan_LocateOpMatchingType(current_segment->root, PROJECT_OPS,
+														   PROJECT_OP_COUNT);
 		assert(connecting_op->childCount == 0);
 
 		ExecutionPlan_AddOp(connecting_op, prev_root);
 
 		// Place filter ops required by current segment.
 		QueryCtx_SetAST(ast_segments[i]);
-		if(current_segment->filter_tree) ExecutionPlan_PlaceFilterOps(current_segment, prev_scope_end);
+		if(current_segment->filter_tree) {
+			ExecutionPlan_PlaceFilterOps(current_segment, prev_scope_end);
+			current_segment->filter_tree = NULL;
+		}
 
 		prev_scope_end = prev_root; // Track the previous scope's end so filter placement doesn't overreach.
 	}
-
-	// Free all scoped ASTs.
-	for(uint i = 0; i < segment_count; i++) AST_Free(ast_segments[i]);
 
 	QueryCtx_SetAST(ast); // AST segments have been freed, set master AST in QueryCtx.
 
 	array_free(segment_indices);
 
-	ExecutionPlan *plan = segments[segment_count - 1];
+	ExecutionPlan *plan = array_pop(segments);
 	// The root operation is OpResults only if the query culminates in a RETURN or CALL clause.
 	if(query_has_return || last_clause_type == CYPHER_AST_CALL) {
 		OpBase *results_op = NewResultsOp(plan);
 		_ExecutionPlan_UpdateRoot(plan, results_op);
 	}
 
-	// Disregard self.
-	plan->segment_count = segment_count - 1;
 	plan->segments = segments;
 
 	return plan;
+}
+
+// Sets an AST segment in the execution plan.
+inline void ExecutionPlan_SetAST(ExecutionPlan *plan, AST *ast) {
+	plan->ast_segment = ast;
+}
+
+// Gets the AST segment from the execution plan.
+inline AST *ExecutionPlan_GetAST(const ExecutionPlan *plan) {
+	return plan->ast_segment;
 }
 
 void ExecutionPlan_PreparePlan(ExecutionPlan *plan) {
@@ -926,7 +969,7 @@ static inline void _ExecutionPlan_InitRecordPool(ExecutionPlan *plan) {
 	plan->record_pool = ObjectPool_New(256, rec_size, (fpDestructor)Record_FreeEntries);
 }
 
-void _ExecutionPlanInit(OpBase *root) {
+static void _ExecutionPlanInit(OpBase *root) {
 	// If the ExecutionPlan associated with this op hasn't built a record pool yet, do so now.
 	_ExecutionPlan_InitRecordPool((ExecutionPlan *)root->plan);
 
@@ -1005,8 +1048,11 @@ static void _ExecutionPlan_FreeOperations(OpBase *op) {
 static void _ExecutionPlan_FreeSubPlan(ExecutionPlan *plan) {
 	if(plan == NULL) return;
 
-	for(int i = 0; i < plan->segment_count; i++) _ExecutionPlan_FreeSubPlan(plan->segments[i]);
-	if(plan->segments) rm_free(plan->segments);
+	if(plan->segments) {
+		uint segment_count = array_len(plan->segments);
+		for(int i = 0; i < segment_count; i++) _ExecutionPlan_FreeSubPlan(plan->segments[i]);
+		array_free(plan->segments);
+	}
 
 	if(plan->connected_components) {
 		uint connected_component_count = array_len(plan->connected_components);
@@ -1018,6 +1064,7 @@ static void _ExecutionPlan_FreeSubPlan(ExecutionPlan *plan) {
 	QueryGraph_Free(plan->query_graph);
 	if(plan->record_map) raxFree(plan->record_map);
 	if(plan->record_pool) ObjectPool_Free(plan->record_pool);
+	if(plan->ast_segment) AST_Free(plan->ast_segment);
 	rm_free(plan);
 }
 
@@ -1033,8 +1080,11 @@ void ExecutionPlan_Free(ExecutionPlan *plan) {
 	 * their operation chain freed.
 	 * The last segment is the actual plan passed as an argument to this function.
 	 * TODO this logic isn't ideal, try to improve. */
-	for(int i = 0; i < plan->segment_count; i++) _ExecutionPlan_FreeSubPlan(plan->segments[i]);
-	if(plan->segments) rm_free(plan->segments);
+	if(plan->segments) {
+		uint segment_count = array_len(plan->segments);
+		for(int i = 0; i < segment_count; i++) _ExecutionPlan_FreeSubPlan(plan->segments[i]);
+		array_free(plan->segments);
+	}
 
 	if(plan->connected_components) {
 		uint connected_component_count = array_len(plan->connected_components);
@@ -1046,6 +1096,7 @@ void ExecutionPlan_Free(ExecutionPlan *plan) {
 	QueryGraph_Free(plan->query_graph);
 	if(plan->record_map) raxFree(plan->record_map);
 	if(plan->record_pool) ObjectPool_Free(plan->record_pool);
+	if(plan->ast_segment) AST_Free(plan->ast_segment);
 	rm_free(plan);
 }
 

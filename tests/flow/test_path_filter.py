@@ -1,5 +1,6 @@
 import os
 import sys
+from RLTest import Env
 from redisgraph import Graph, Node, Edge
 from collections import Counter
 
@@ -15,7 +16,7 @@ redis_graph = None
 
 class testPathFilter(FlowTestsBase):
     def __init__(self):
-        super(testPathFilter, self).__init__()
+        self.env = Env()
         global redis_con
         redis_con = self.env.getConnection()
 
@@ -221,3 +222,28 @@ class testPathFilter(FlowTestsBase):
         # Each source node should be returned exactly once.
         expected_results = [['a'], ['b']]
         self.env.assertEquals(result_set.result_set, expected_results)
+
+    def test11_unbound_path_filters(self):
+        # Build a graph with 2 nodes connected by 1 edge.
+        node0 = Node(node_id=0, label="L", properties={'x': 'a'})
+        node1 = Node(node_id=1, label="L", properties={'x': 'b'})
+        edge01 = Edge(src_node=node0, dest_node=node1, relation="R")
+        redis_graph.add_node(node0)
+        redis_graph.add_node(node1)
+        redis_graph.add_edge(edge01)
+        redis_graph.flush()
+
+        # Emit a query that uses an AntiSemiApply op to return values.
+        query = "MATCH (n:L) WHERE NOT (:L)-[]->() RETURN n.x ORDER BY n.x"
+        result_set = redis_graph.query(query)
+        # The WHERE filter evaluates to false, no results should be returned.
+        expected_result = []
+        self.env.assertEquals(result_set.result_set, expected_result)
+
+        # Emit a query that uses a SemiApply op to return values.
+        query = "MATCH (n:L) WHERE (:L)-[]->() RETURN n.x ORDER BY n.x"
+        result_set = redis_graph.query(query)
+        # The WHERE filter evaluates to true, all results should be returned.
+        expected_result = [['a'],
+                           ['b']]
+        self.env.assertEquals(result_set.result_set, expected_result)

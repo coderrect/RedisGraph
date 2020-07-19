@@ -28,8 +28,7 @@ static void _UpdateIndices(GraphContext *gc, Node *n) {
 	Schema *s = GraphContext_GetSchemaByID(gc, label_id, SCHEMA_NODE);
 	if(!Schema_HasIndices(s)) return; // No indices, no need to update.
 
-	Schema_AddNodeToIndices(s, n, true);
-
+	Schema_AddNodeToIndices(s, n);
 }
 
 // Update the appropriate property on a graph entity.
@@ -37,14 +36,14 @@ static void _UpdateProperty(Record r, GraphEntity *ge, EntityUpdateEvalCtx *upda
 	SIValue new_value = AR_EXP_Evaluate(update_ctx->exp, r);
 
 	// Try to get current property value.
-	SIValue *old_value = GraphEntity_GetProperty(ge, update_ctx->attribute_idx);
+	SIValue *old_value = GraphEntity_GetProperty(ge, update_ctx->attribute_id);
 
 	if(old_value == PROPERTY_NOTFOUND) {
 		// Add new property.
-		GraphEntity_AddProperty(ge, update_ctx->attribute_idx, new_value);
+		GraphEntity_AddProperty(ge, update_ctx->attribute_id, new_value);
 	} else {
 		// Update property.
-		GraphEntity_SetProperty(ge, update_ctx->attribute_idx, new_value);
+		GraphEntity_SetProperty(ge, update_ctx->attribute_id, new_value);
 	}
 }
 
@@ -56,10 +55,6 @@ static void _UpdateProperties(ResultSetStatistics *stats, EntityUpdateEvalCtx *u
 	GraphContext *gc = QueryCtx_GetGraphCtx();
 	// Lock everything.
 	QueryCtx_LockForCommit();
-	// Iterate over all update contexts, converting property keys to IDs.
-	for(uint i = 0; i < update_count; i ++) {
-		updates[i].attribute_idx = GraphContext_FindOrAddAttribute(gc, updates[i].attribute);
-	}
 
 	for(uint i = 0; i < record_count; i ++) {  // For each record to update
 		Record r = records[i];
@@ -91,7 +86,7 @@ OpBase *NewMergeOp(const ExecutionPlan *plan, EntityUpdateEvalCtx *on_match,
 	/* Merge is an operator with two or three children. They will be created outside of here,
 	 * as with other multi-stream operators (see CartesianProduct and ValueHashJoin). */
 	OpMerge *op = rm_calloc(1, sizeof(OpMerge));
-	op->stats = QueryCtx_GetResultSetStatistics();
+	op->stats = NULL;
 	op->on_match = on_match;
 	op->on_create = on_create;
 	// Set our Op operations
@@ -122,7 +117,7 @@ OpBase *NewMergeOp(const ExecutionPlan *plan, EntityUpdateEvalCtx *on_match,
 // Match and Create streams are always guaranteed to not branch (have any ops with multiple children).
 static OpBase *_LocateOp(OpBase *root, OPType type) {
 	if(!root) return NULL;
-	if(root->type & type) return root;
+	if(root->type == type) return root;
 	if(root->childCount > 0) return _LocateOp(root->children[0], type);
 	return NULL;
 }
@@ -134,6 +129,7 @@ static OpResult MergeInit(OpBase *opBase) {
 	 * - The last creates the pattern. */
 	assert(opBase->childCount == 2 || opBase->childCount == 3);
 	OpMerge *op = (OpMerge *)opBase;
+	op->stats = QueryCtx_GetResultSetStatistics();
 	if(opBase->childCount == 2) {
 		// If we only have 2 streams, we simply need to determine which has a MergeCreate op.
 		if(_LocateOp(opBase->children[0], OPType_MERGE_CREATE)) {
@@ -193,10 +189,10 @@ static OpResult MergeInit(OpBase *opBase) {
 
 	// Find and store references to the Argument taps for the Match and Create streams.
 	// The Match stream is populated by an Argument tap, store a reference to it.
-	op->match_argument_tap = (Argument *)ExecutionPlan_LocateFirstOp(op->match_stream, OPType_ARGUMENT);
+	op->match_argument_tap = (Argument *)ExecutionPlan_LocateOp(op->match_stream, OPType_ARGUMENT);
 	// If the create stream is populated by an Argument tap, store a reference to it.
-	op->create_argument_tap = (Argument *)ExecutionPlan_LocateFirstOp(op->create_stream,
-																	  OPType_ARGUMENT);
+	op->create_argument_tap = (Argument *)ExecutionPlan_LocateOp(op->create_stream,
+																 OPType_ARGUMENT);
 	// Set up an array to store records produced by the bound variable stream.
 	op->input_records = array_new(Record, 1);
 

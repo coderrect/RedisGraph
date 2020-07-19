@@ -1,7 +1,7 @@
 <img src="images/logo.svg" alt="logo" width="200"/>
 
 # RedisGraph
-[![Mailing List](https://img.shields.io/badge/Mailing%20List-RedisGraph-blue)](https://groups.google.com/forum/#!forum/redisgraph)
+[![Forum](https://img.shields.io/badge/Forum-RedisGraph-blue)](https://forum.redislabs.com/c/modules/redisgraph)
 [![Gitter](https://badges.gitter.im/RedisLabs/RedisGraph.svg)](https://gitter.im/RedisLabs/RedisGraph?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
 RedisGraph is the first queryable [Property Graph](https://github.com/opencypher/openCypher/blob/master/docs/property-graph-model.adoc) database to use [sparse matrices](https://en.wikipedia.org/wiki/Sparse_matrix) to represent the [adjacency matrix](https://en.wikipedia.org/wiki/Adjacency_matrix) in graphs and [linear algebra](http://faculty.cse.tamu.edu/davis/GraphBLAS.html) to query the graph.
@@ -20,10 +20,17 @@ To see RedisGraph in action, visit [Demos](https://github.com/RedisGraph/RedisGr
 
 ## Quickstart
 
+1. [Redis Cloud](#redis-cloud)
 1. [Docker](#docker)
-2. [Build](#building)
-3. [Start](#loading-redisgraph-into-redis)
-4. [Use from any client](#using-redisgraph)
+1. [Build](#building)
+1. [Start](#loading-redisgraph-into-redis)
+1. [Use from any client](#using-redisgraph)
+
+## Redis Cloud
+
+RedisGraph is available on all Redis Cloud managed services.  Redis Cloud Essentials offers a completely free managed databbases up to 30MB.
+
+[Get started here](https://redislabs.com/try-free/)
 
 ## Docker
 
@@ -72,6 +79,10 @@ How many riders represent team Ducati?
 2) 1) 1) (integer) 1
 3) 1) "Query internal execution time: 0.624435 milliseconds"
 ```
+
+## Download
+
+A pre-compiled version can be downloaded from [RedisLabs download center](https://redislabs.com/download-center/modules/).
 
 ## Building
 
@@ -164,7 +175,7 @@ The full list and links can be found on [the Clients page](clients.md).
 
 ## Mailing List / Forum
 
-Got questions? Feel free to ask at the [RedisGraph mailing list](https://groups.google.com/forum/#!forum/redisgraph).
+Got questions? Feel free to ask at the [RedisGraph forum](https://forum.redislabs.com/c/modules/redisgraph).
 
 ## License
 

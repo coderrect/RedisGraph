@@ -26,9 +26,11 @@ CFLAGS += $(DEBUGFLAGS)
 # Compile flags for linux / osx
 ifeq ($(uname_S),Linux)
 	SHOBJ_LDFLAGS ?= -shared -Bsymbolic -Bsymbolic-functions -ldl -lpthread -fopenmp
+	export OS = Linux
 else
 	CFLAGS += -mmacosx-version-min=10.14
 	SHOBJ_LDFLAGS ?= -mmacosx-version-min=10.14 -bundle -undefined dynamic_lookup -ldl -lpthread -fopenmp
+	export OS = Mac
 endif
 SHOBJ_LDFLAGS += $(LDFLAGS)
 export CFLAGS
@@ -59,11 +61,14 @@ CC_SOURCES += $(wildcard $(SOURCEDIR)/execution_plan/optimizations/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/filter_tree/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/entities/*.c)
-CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/serializers/*.c)
-CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/serializers/encoder/*.c)
-CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/serializers/decoders/*.c)
-CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/serializers/decoders/prev/*.c)
-CC_SOURCES += $(wildcard $(SOURCEDIR)/graph/serializers/decoders/prev/*/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/encoder/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/encoder/*/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/decoders/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/decoders/current/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/decoders/current/*/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/decoders/prev/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/serializers/decoders/prev/*/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/GraphBLASExt/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/grouping/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/index/*.c)
@@ -79,6 +84,7 @@ CC_SOURCES += $(wildcard $(SOURCEDIR)/util/datablock/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/util/object_pool/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/util/thpool/*.c)
 CC_SOURCES += $(wildcard $(SOURCEDIR)/util/range/*.c)
+CC_SOURCES += $(wildcard $(SOURCEDIR)/util/cache/*.c)
 
 # Convert all sources to .o files
 CC_OBJECTS = $(patsubst %.c, %.o, $(CC_SOURCES) )
@@ -150,7 +156,7 @@ endif
 $(LIBCYPHER-PARSER):
 ifeq (,$(wildcard $(LIBCYPHER-PARSER)))
 	cd ../deps/libcypher-parser; \
-	./autogen.sh; \
+	sh ./autogen.sh; \
 	./configure --disable-shared;
 	$(MAKE) CFLAGS="-fPIC -DYY_BUFFER_SIZE=1048576" clean check -C ../deps/libcypher-parser
 endif
@@ -186,10 +192,15 @@ test: redisgraph.so
 	# check valgrind flag is not empty
 ifneq ($(VALGRIND),)
 	# valgrind is requested, check that host's os is not Linux
-ifneq ($(uname_S),Linux)
+ifneq ($(OS),Linux)
 	@echo building docker to run valgrind on MacOS
 	@cd ../ ;\
 	docker build -f ./tests/Dockerfile -t mac_os_test_docker .;
 endif
 endif
 	@$(MAKE) -C ../tests test
+
+memcheck: CFLAGS += -fno-omit-frame-pointer -g -ggdb -O0 -D MEMCHECK
+memcheck: SHOBJ_LDFLAGS += -u RediSearch_CleanupModule
+memcheck: redisgraph.so
+	@$(MAKE) -C ../tests memcheck

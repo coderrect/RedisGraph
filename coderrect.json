@@ -1,0 +1,7 @@
+{
+"openlib": {
+    "entryPoints":                [
+	  "Graph_Query"    ],
+    "limit":                      999
+  }
+}

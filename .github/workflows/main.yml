@@ -1,0 +1,26 @@
+name: CR
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    # Test on ubuntu
+    runs-on: ubuntu-latest
+
+    steps:
+      # This project have submodules to checkout
+      - uses: actions/checkout@v2
+        with:
+          submodules: "true"
+
+      # Run configuration before `make`
+      - name: Pre-build
+        run: |
+          apt-get install build-essential cmake m4 automake peg libtool autoconf
+          
+      # Apply Coderrect Scanner
+      - name: Coderrect Scan
+        uses: coderrect-inc/coderrect-github-action@v0.5
+        with:
+          buildCommand: make
+          exit0: true

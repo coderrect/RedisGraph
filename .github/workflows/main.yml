@@ -16,7 +16,7 @@ jobs:
       # Run configuration before `make`
       - name: Pre-build
         run: |
-          apt-get install build-essential cmake m4 automake peg libtool autoconf
+          sudo apt-get install build-essential cmake m4 automake peg libtool autoconf
           
       # Apply Coderrect Scanner
       - name: Coderrect Scan
@@ -24,3 +24,4 @@ jobs:
         with:
           buildCommand: make
           exit0: true
+          options: "-conf=coderrect.json"
